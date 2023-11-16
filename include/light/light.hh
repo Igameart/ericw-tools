@@ -415,7 +415,14 @@ public:
 
     fs::path sourceMap;
 
+    constexpr auto LIT_EXTERNAL_RGB8 = (1u<<0);
+    constexpr auto LIT_INTERNAL_RGB8 = (1u<<1);
+    constexpr auto LIT_EXTERNAL_E5BGR9 = (1u<<2);
+    constexpr auto LIT_INTERNAL_E5BGR9 = (1u<<3);
+    constexpr auto LIT_EXTERNAL_LIT2 = (1u<<4);
     bitflags<lightfile> write_litfile = lightfile::none;
+    constexpr auto LUX_EXTERNAL = 1;
+    constexpr auto LUX_INTERNAL = 2;
     bitflags<lightfile> write_luxfile = lightfile::none;
     debugmodes debugmode = debugmodes::none;
 
@@ -430,6 +437,7 @@ extern settings::light_settings light_options;
 
 extern std::vector<uint8_t> filebase;
 extern std::vector<uint8_t> lit_filebase;
+extern std::vector<uint32_t> hdr_filebase;
 extern std::vector<uint8_t> lux_filebase;
 
 const std::unordered_map<int, std::vector<uint8_t>> &UncompressedVis();
@@ -443,8 +451,10 @@ extern std::vector<surfflags_t> extended_texinfo_flags;
 // public functions
 
 void FixupGlobalSettings(void);
-void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int size);
-void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int lightofs);
+//void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int size);
+//void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int lightofs);
+void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint32_t **hdrdata, uint8_t **deluxdata, int size);
+void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, uint32_t **hdrdata, uint8_t **deluxdata, int lightofs);
 const modelinfo_t *ModelInfoForModel(const mbsp_t *bsp, int modelnum);
 /**
  * returns nullptr for "skip" faces

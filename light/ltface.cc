@@ -2413,13 +2413,13 @@ inline void LightFace_ScaleAndClamp(lightsurf_t *lightsurf)
 
             // before any other scaling, apply maxlight
             if (lightsurf->maxlight || cfg.maxlight.value()) {
-                vec_t maxcolor = qv::max(color);
+                //vec_t maxcolor = qv::max(color);
                 // FIXME: for colored lighting, this doesn't seem to generate the right values...
                 vec_t maxval = (lightsurf->maxlight ? lightsurf->maxlight : cfg.maxlight.value()) * 2.0;
 
-                if (maxcolor > maxval) {
-                    color *= (maxval / maxcolor);
-                }
+                //if (maxcolor > maxval) {
+                //    color *= (maxval / maxcolor);
+                //}
             }
 
             // color scaling
@@ -2439,11 +2439,11 @@ inline void LightFace_ScaleAndClamp(lightsurf_t *lightsurf)
 
             // clamp
             // FIXME: should this be a brightness clamp?
-            vec_t maxcolor = qv::max(color);
+            //vec_t maxcolor = qv::max(color);
 
-            if (maxcolor > 255.0) {
-                color *= (255.0 / maxcolor);
-            }
+            //if (maxcolor > 255.0) {
+            //    color *= (255.0 / maxcolor);
+            //}
         }
     }
 }
@@ -2915,8 +2915,24 @@ static void WriteSingleLightmap(const mbsp_t *bsp, const mface_t *face, const li
             const int input_sample_t = (t / (float)output_height) * actual_height;
             const int sampleindex = (input_sample_t * actual_width) + input_sample_s;
 
-            if (lit || out) {
+            if (lit || out || hdr) {
                 const qvec4f &color = output_color.at(sampleindex);
+
+                if (hdr)
+                    *hdr++ = HDR_PackResult(color);
+
+                vec_t maxcolor = 0;
+                for (int c = 0; c < 3; c++) {
+                    if (color[c] > maxcolor) {
+                        maxcolor = color[c];
+                    }
+                }
+                if (maxcolor>255)
+                {
+                    color[0] *= 255.0/maxcolor;
+                    color[1] *= 255.0/maxcolor;
+                    color[2] *= 255.0/maxcolor;
+                }
 
                 if (lit) {
                     *lit++ = color[0];
@@ -2968,7 +2984,7 @@ static void WriteSingleLightmap(const mbsp_t *bsp, const mface_t *face, const li
  * - Writes (output_width * output_height * 3) bytes to `lux`
  */
 static void WriteSingleLightmap_FromDecoupled(const mbsp_t *bsp, const mface_t *face, const lightsurf_t *lightsurf,
-    const lightmap_t *lm, const int output_width, const int output_height, uint8_t *out, uint8_t *lit, uint8_t *lux)
+    const lightmap_t *lm, const int output_width, const int output_height, uint8_t *out, uint8_t *lit, uint32_t *hdr, uint8_t *lux)
 {
     // this is the lightmap data in the "decoupled" coordinate system
     std::vector<qvec4f> fullres = LightmapColorsToGLMVector(lightsurf, lm);
@@ -3032,6 +3048,39 @@ static void WriteSingleLightmap_FromDecoupled(const mbsp_t *bsp, const mface_t *
     }
 }
 
+static unsigned int HDR_PackResult(qvec4f rgba)
+{
+#define HDR_ONE 128.0   //logical value for 1.0 lighting (quake's overbrights give 255).
+    //we want 0-1-like values. except that we can oversample and express smaller values too.
+    float r = rgba[0]/HDR_ONE;
+    float g = rgba[1]/HDR_ONE;
+    float b = rgba[2]/HDR_ONE;
+
+    int e = 0;
+    float m = max(max(r, g), b);
+    float scale;
+
+    if (m >= 0.5)
+    {   //positive exponent
+        while (m >= (1<<(e)) && e < 30-15)  //don't do nans.
+            e++;
+    }
+    else
+    {   //negative exponent...
+        while (m < 1/(1<<-e) && e > -15)    //don't do nans.
+            e--;
+    }
+
+    scale = pow(2, e-9);
+
+    return ((e+15)<<27) |
+        (min((int)(r/scale + 0.5), 0x1ff)<<18) |
+        (min((int)(g/scale + 0.5), 0x1ff)<<9) |
+        (min((int)(b/scale + 0.5), 0x1ff)<<0);
+}
+
+
+
 void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
     bspx_decoupled_lm_perface *facesup_decoupled, lightsurf_t *lightsurf, const faceextents_t &extents,
     const faceextents_t &output_extents)
@@ -3054,7 +3103,8 @@ void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
         }
 
         uint8_t *out, *lit, *lux;
-        GetFileSpace_PreserveOffsetInBsp(&out, &lit, &lux, face->lightofs);
+        uint32_t *hdr
+        GetFileSpace_PreserveOffsetInBsp(&out, &lit, &hdr, &lux, face->lightofs);
 
         for (int mapnum = 0; mapnum < MAXLIGHTMAPS; mapnum++) {
             const int style = face->styles[mapnum];
@@ -3067,7 +3117,7 @@ void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
             for (const lightmap_t &lm : lightmaps) {
                 if (lm.style == style) {
                     WriteSingleLightmap(
-                        bsp, face, lightsurf, &lm, actual_width, actual_height, out, lit, lux, output_extents);
+                        bsp, face, lightsurf, &lm, actual_width, actual_height, out, lit, hdr, lux, output_extents);
                     break;
                 }
             }
@@ -3078,6 +3128,9 @@ void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
             }
             if (lit) {
                 lit += (size * 3);
+            }
+            if (hdr) {
+                hdr += size;
             }
             if (lux) {
                 lux += (size * 3);

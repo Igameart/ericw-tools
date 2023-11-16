@@ -88,6 +88,13 @@ static int lit_file_p;
 /// offset of end of space for litfile data
 static int lit_file_end;
 
+/// start of litfile data
+uint32_t *hdr_filebase;
+/// offset of start of free space after litfile data (should be kept a multiple of 12)
+static int hdr_file_p;
+/// offset of end of space for litfile data
+static int hdr_file_end;
+
 /// start of luxfile data
 std::vector<uint8_t> lux_filebase;
 /// offset of start of free space after luxfile data (should be kept a multiple of 12)
@@ -542,7 +549,7 @@ static std::mutex light_mutex;
  * size is the number of greyscale pixels = number of bytes to allocate
  * and return in *lightdata
  */
-void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int size)
+void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint32_t **hdrdata, uint8_t **deluxdata, int size)
 {
     light_mutex.lock();
 
@@ -553,6 +560,9 @@ void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata,
     }
     if (!lit_filebase.empty()) {
         *colordata = lit_filebase.data() + lit_file_p;
+    }
+    if (!lit_filebase.empty()) {
+        *hdrdata = hdr_filebase.data() + hdr_file_p;
     }
     if (!lux_filebase.empty()) {
         *deluxdata = lux_filebase.data() + lux_file_p;
@@ -571,6 +581,9 @@ void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata,
     if (!lit_filebase.empty()) {
         lit_file_p += 3 * size;
     }
+    if (!hdr_filebase.empty()) {
+        hdr_file_p += size;
+    }
     if (!lux_filebase.empty()) {
         lux_file_p += 3 * size;
     }
@@ -588,7 +601,7 @@ void GetFileSpace(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata,
  * Special version of GetFileSpace for when we're relighting a .bsp and can't modify it.
  * In this case the offsets are already known.
  */
-void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, uint8_t **deluxdata, int lightofs)
+void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, uint32_t **hdrdata, uint8_t **deluxdata, int lightofs)
 {
     Q_assert(lightofs >= 0);
 
@@ -600,6 +613,10 @@ void GetFileSpace_PreserveOffsetInBsp(uint8_t **lightdata, uint8_t **colordata, 
 
     if (colordata && !lit_filebase.empty()) {
         *colordata = lit_filebase.data() + (lightofs * 3);
+    }
+    
+    if (hdrdata && !hdr_filebase.empty()) {
+        *hdrdata = hdr_filebase.data() + (lightofs);
     }
 
     if (deluxdata && !lux_filebase.empty()) {

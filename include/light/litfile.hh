@@ -28,6 +28,7 @@
 struct mbsp_t;
 
 constexpr int32_t LIT_VERSION = 1;
+constexpr int32_t LIT_VERSION_E5BGR9 = (0x00010000 | LIT_VERSION);
 
 struct litheader_t
 {
