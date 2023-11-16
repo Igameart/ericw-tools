@@ -152,7 +152,7 @@ struct surfflags_t
 
     // if true, rescales any surface light emitted by these brushes to emit 50% light at 90 degrees from the surface
     // normal if false, use a more natural angle falloff of 0% at 90 degrees
-    bool surflight_rescale = true;
+    std::optional<bool> surflight_rescale;
 
     // override surface lighting style
     std::optional<int32_t> surflight_style;
@@ -183,6 +183,9 @@ struct surfflags_t
 
     // custom opacity
     std::optional<vec_t> light_alpha;
+
+    // two-sided lighting
+    std::optional<bool> light_twosided;
 
     // maxlight value for this face
     vec_t maxlight;
@@ -229,6 +232,9 @@ struct content_stats_base_t
 // the game a BSP version is being compiled for.
 struct gamedef_t
 {
+    // friendly name, used for commands
+    const char *friendly_name;
+
     // ID, used for quick comparisons
     gameid_t id = GAME_UNKNOWN;
 
@@ -247,7 +253,7 @@ struct gamedef_t
     size_t max_entity_key = 32;
     size_t max_entity_value = 128;
 
-    gamedef_t(const char *default_base_dir);
+    gamedef_t(const char *friendly_name, const char *default_base_dir);
 
     // surface stores lightmap/luxel color data
     virtual bool surf_is_lightmapped(

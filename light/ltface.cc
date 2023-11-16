@@ -493,38 +493,10 @@ static const std::vector<uint8_t> *Mod_LeafPvs(const mbsp_t *bsp, const mleaf_t 
     }
 
     const int key = (bsp->loadversion->game->id == GAME_QUAKE_II) ? leaf->cluster : leaf->visofs;
-    if (auto it = UncompressedVis().find(leaf->cluster); it != UncompressedVis().end()) {
+    if (auto it = UncompressedVis().find(key); it != UncompressedVis().end()) {
         return &it->second;
     }
     return nullptr;
-}
-
-// returns true if pvs can see leaf
-static bool Pvs_LeafVisible(const mbsp_t *bsp, const std::vector<uint8_t> &pvs, const mleaf_t *leaf)
-{
-    if (bsp->loadversion->game->id == GAME_QUAKE_II) {
-        if (leaf->cluster < 0) {
-            return false;
-        }
-
-        if (leaf->cluster >= bsp->dvis.bit_offsets.size() ||
-            bsp->dvis.get_bit_offset(VIS_PVS, leaf->cluster) >= bsp->dvis.bits.size()) {
-            logging::print("Pvs_LeafVisible: invalid visofs for cluster {}\n", leaf->cluster);
-            return false;
-        }
-
-        return !!(pvs[leaf->cluster >> 3] & (1 << (leaf->cluster & 7)));
-    } else {
-        const int leafnum = (leaf - bsp->dleafs.data());
-        const int visleaf = leafnum - 1;
-
-        if (visleaf < 0 || visleaf >= bsp->dmodels[0].visleafs) {
-            logging::print("WARNING: bad/empty vis data on leaf?");
-            return false;
-        }
-
-        return !!(pvs[visleaf >> 3] & (1 << (visleaf & 7)));
-    }
 }
 
 static void CalcPvs(const mbsp_t *bsp, lightsurf_t *lightsurf)
@@ -607,6 +579,11 @@ static std::unique_ptr<lightsurf_t> Lightsurf_Init(const modelinfo_t *modelinfo,
         const surfflags_t &extended_flags = extended_texinfo_flags[face->texinfo];
         lightsurf->curved = extended_flags.phong_angle != 0 || Q2_FacePhongValue(bsp, face);
 
+        // override the autodetected twosided setting?
+        if (extended_flags.light_twosided) {
+            lightsurf->twosided = *extended_flags.light_twosided;
+        }
+
         // nodirt
         if (modelinfo->dirt.is_changed()) {
             lightsurf->nodirt = (modelinfo->dirt.value() == -1);
@@ -629,12 +606,7 @@ static std::unique_ptr<lightsurf_t> Lightsurf_Init(const modelinfo_t *modelinfo,
         } else if (light_options.minlightMottle.is_changed()) {
             lightsurf->minlightMottle = light_options.minlightMottle.value();
         } else {
-            // default value depends on game
-            if (bsp->loadversion->game->id == GAME_QUAKE_II) {
-                lightsurf->minlightMottle = true;
-            } else {
-                lightsurf->minlightMottle = false;
-            }
+            lightsurf->minlightMottle = false;
         }
 
         // Q2 uses a 0-1 range for minlight
@@ -753,6 +725,7 @@ static void Lightmap_AllocOrClear(lightmap_t *lightmap, const lightsurf_t *light
     } else if (lightmap->style != INVALID_LIGHTSTYLE) {
         /* clear only the data that is going to be merged to it. there's no point clearing more */
         std::fill_n(lightmap->samples.begin(), lightsurf->samples.size(), lightsample_t{});
+        lightmap->bounce_color = {};
     }
 }
 
@@ -794,13 +767,6 @@ static lightmap_t *Lightmap_ForStyle(lightmapdict_t *lightmaps, const int style,
     newLightmap.style = INVALID_LIGHTSTYLE;
     Lightmap_AllocOrClear(&newLightmap, lightsurf);
     return &newLightmap;
-}
-
-static void Lightmap_ClearAll(lightmapdict_t *lightmaps)
-{
-    for (auto &lm : *lightmaps) {
-        lm.style = INVALID_LIGHTSTYLE;
-    }
 }
 
 /*
@@ -1301,6 +1267,7 @@ static void LightFace_Entity(
         lightsample_t &sample = cached_lightmap->samples[i];
 
         sample.color += rs.getPushedRayColor(j);
+        cached_lightmap->bounce_color += rs.getPushedRayColor(j);
         sample.direction += rs.getPushedRayNormalContrib(j);
 
         Lightmap_Save(bsp, lightmaps, lightsurf, cached_lightmap, cached_style);
@@ -1473,6 +1440,7 @@ static void LightFace_Sky(const mbsp_t *bsp, const sun_t *sun, lightsurf_t *ligh
         lightsample_t &sample = cached_lightmap->samples[i];
 
         sample.color += rs.getPushedRayColor(j);
+        cached_lightmap->bounce_color += rs.getPushedRayColor(j);
         sample.direction += rs.getPushedRayNormalContrib(j);
         total_light_ray_hits++;
 
@@ -1769,7 +1737,6 @@ static void LightFace_LocalMin(
 
 static void LightFace_AutoMin(const mbsp_t *bsp, const mface_t *face, lightsurf_t *lightsurf, lightmapdict_t *lightmaps)
 {
-    const settings::worldspawn_keys &cfg = *lightsurf->cfg;
     const modelinfo_t *modelinfo = lightsurf->modelinfo;
 
     if (!modelinfo)
@@ -1914,7 +1881,7 @@ constexpr qvec3f SurfaceLight_ColorAtDist(const settings::worldspawn_keys &cfg, 
 // dir: vpl -> sample point direction
 // mxd. returns color in [0,255]
 inline qvec3f GetSurfaceLighting(const settings::worldspawn_keys &cfg, const surfacelight_t &vpl,
-    const surfacelight_t::per_style_t &vpl_settings, const qvec3f &dir, const float dist, const qvec3f &normal,
+    const surfacelight_t::per_style_t &vpl_settings, const qvec3f &dir, float dist, const qvec3f &normal,
     bool use_normal, const vec_t &standard_scale, const vec_t &sky_scale, const float &hotspot_clamp)
 {
     qvec3f result;
@@ -1939,10 +1906,19 @@ inline qvec3f GetSurfaceLighting(const settings::worldspawn_keys &cfg, const sur
         dotProductFactor = dp1 * dp2;
     } else {
         // used for sky face surface lights
-        dotProductFactor = dp2;
+        dotProductFactor = dp2 * 0.5f;
     }
 
     dotProductFactor = std::max(0.0f, dotProductFactor);
+
+    // quick exit
+    if (!dotProductFactor) {
+        return {0};
+    }
+
+    if (vpl_settings.omnidirectional) {
+        dist += cfg.surflightskydist.value();
+    }
 
     // Get light contribution
     result = SurfaceLight_ColorAtDist(cfg, vpl_settings.omnidirectional ? sky_scale : standard_scale,
@@ -1951,7 +1927,7 @@ inline qvec3f GetSurfaceLighting(const settings::worldspawn_keys &cfg, const sur
     // Apply angle scale
     const qvec3f resultscaled = result * dotProductFactor;
 
-    Q_assert(!std::isnan(resultscaled[0]) && !std::isnan(resultscaled[1]) && !std::isnan(resultscaled[2]));
+    //Q_assert(!std::isnan(resultscaled[0]) && !std::isnan(resultscaled[1]) && !std::isnan(resultscaled[2]));
     return resultscaled;
 }
 
@@ -1977,7 +1953,7 @@ SurfaceLight_SphereCull(const surfacelight_t *vpl, const lightsurf_t *lightsurf,
 }
 
 static void // mxd
-LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t *lightmaps, bool bounce,
+LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t *lightmaps, std::optional<size_t> bounce_depth,
     const vec_t &standard_scale, const vec_t &sky_scale, const float &hotspot_clamp)
 {
     const settings::worldspawn_keys &cfg = *lightsurf->cfg;
@@ -1988,18 +1964,12 @@ LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t
         return;
     }
 
-    for (const auto &surf_ptr : LightSurfaces()) {
-
-        if (!surf_ptr || !surf_ptr->vpl) {
-            // didn't emit anthing
-            continue;
-        }
-
+    for (const auto &surf_ptr : EmissiveLightSurfaces()) {
         auto &vpl = *surf_ptr->vpl.get();
 
         for (const auto &vpl_setting : surf_ptr->vpl->styles) {
 
-            if (vpl_setting.bounce != bounce)
+            if (vpl_setting.bounce_level != bounce_depth)
                 continue;
             else if (SurfaceLight_SphereCull(&vpl, lightsurf, vpl_setting, surflight_gate, hotspot_clamp))
                 continue;
@@ -2025,10 +1995,13 @@ LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t
 
                     const qvec3f &pos = vpl.points[c];
                     qvec3f dir = lightsurf_pos - pos;
-                    float dist = qv::length(dir);
+                    float dist = std::max(0.01f, qv::length(dir));
                     bool use_normal = true;
 
-                    if (dist == 0.0f) {
+                    if (lightsurf->twosided) {
+                        use_normal = false;
+                        dir /= dist;
+                    } else if (dist == 0.0f) {
                         dir = lightsurf_normal;
                         use_normal = false;
                     } else {
@@ -2060,7 +2033,7 @@ LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t
                     const int i = rs.getPushedRayPointIndex(j);
                     qvec3f indirect = rs.getPushedRayColor(j);
 
-                    Q_assert(!std::isnan(indirect[0]));
+                    //Q_assert(!std::isnan(indirect[0]));
 
                     // Use dirt scaling on the surface lighting.
                     const vec_t dirtscale =
@@ -2069,6 +2042,7 @@ LightFace_SurfaceLight(const mbsp_t *bsp, lightsurf_t *lightsurf, lightmapdict_t
 
                     lightsample_t &sample = lightmap->samples[i];
                     sample.color += indirect;
+                    lightmap->bounce_color += indirect;
 
                     hit = true;
                     ++total_surflight_ray_hits;
@@ -2090,11 +2064,7 @@ LightPoint_SurfaceLight(const mbsp_t *bsp, const std::vector<uint8_t> *pvs, rays
     const settings::worldspawn_keys &cfg = light_options;
     const float surflight_gate = 0.01f;
 
-    for (const auto &surf : LightSurfaces()) {
-        if (!surf || !surf->vpl) {
-            continue;
-        }
-
+    for (const auto &surf : EmissiveLightSurfaces()) {
         const surfacelight_t &vpl = *surf->vpl;
 
         for (int c = 0; c < vpl.points.size(); c++) {
@@ -2104,7 +2074,7 @@ LightPoint_SurfaceLight(const mbsp_t *bsp, const std::vector<uint8_t> *pvs, rays
 
             // 1 ray
             for (auto &vpl_settings : vpl.styles) {
-                if (vpl_settings.bounce != bounce)
+                if (vpl_settings.bounce_level.has_value() != bounce)
                     continue;
 
                 qvec3f pos = vpl.points[c];
@@ -2157,7 +2127,7 @@ LightPoint_SurfaceLight(const mbsp_t *bsp, const std::vector<uint8_t> *pvs, rays
 
                     qvec3f indirect = rs.getPushedRayColor(j);
 
-                    Q_assert(!std::isnan(indirect[0]));
+                    //Q_assert(!std::isnan(indirect[0]));
 
                     result.add(indirect, vpl_settings.style);
                 }
@@ -3289,7 +3259,6 @@ void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
 
     // sanity check that we don't save a lightmap for a non-lightmapped face
     {
-        const char *texname = Face_TextureName(bsp, face);
         Q_assert(Face_IsLightmapped(bsp, face));
     }
 
@@ -3407,7 +3376,7 @@ void DirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::
             // mxd. Add surface lights...
             // FIXME: negative surface lights
             LightFace_SurfaceLight(
-                bsp, &lightsurf, lightmaps, false, cfg.surflightscale.value(), cfg.surflightskyscale.value(), 16.0f);
+                bsp, &lightsurf, lightmaps, std::nullopt, cfg.surflightscale.value(), cfg.surflightskyscale.value(), 16.0f);
         }
 
         LightFace_LocalMin(bsp, face, &lightsurf, lightmaps);
@@ -3432,7 +3401,7 @@ void DirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::
  * IndirectLightFace
  * ============
  */
-void IndirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg)
+void IndirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg, size_t bounce_depth)
 {
     auto face = lightsurf.face;
     const modelinfo_t *modelinfo = ModelInfoForFace(bsp, Face_GetNum(bsp, face));
@@ -3447,7 +3416,7 @@ void IndirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings
             /* add bounce lighting */
             // note: scale here is just to keep it close-ish to the old code
             LightFace_SurfaceLight(
-                bsp, &lightsurf, lightmaps, true, cfg.bouncescale.value() * 0.5, cfg.bouncescale.value(), 128.0f);
+                bsp, &lightsurf, lightmaps, bounce_depth, cfg.bouncescale.value() * 0.5, cfg.bouncescale.value(), 128.0f);
         }
     }
 }
@@ -3599,7 +3568,34 @@ float lightgrid_sample_t::brightness() const
 
 bool lightgrid_sample_t::operator==(const lightgrid_sample_t &other) const
 {
-    return used == other.used && style == other.style && color == other.color;
+    if (used != other.used)
+        return false;
+
+    if (!used) {
+        // if unused, style and color don't matter
+        return true;
+    }
+
+    if (style != other.style)
+        return false;
+
+    // color check requires special handling for nan
+    for (int i=0; i<3; ++i) {
+        if (std::isnan(color[i])) {
+            if (!std::isnan(other.color[i]))
+                return false;
+        } else {
+            if (color[i] != other.color[i])
+                return false;
+        }
+    }
+
+    return true;
+}
+
+bool lightgrid_sample_t::operator!=(const lightgrid_sample_t &other) const
+{
+    return !(*this == other);
 }
 
 int lightgrid_samples_t::used_styles() const

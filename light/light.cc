@@ -60,10 +60,30 @@ bool dirt_in_use = false;
 
 // intermediate representation of lightmap surfaces
 static std::vector<std::unique_ptr<lightsurf_t>> light_surfaces;
+// light_surfaces filtered down to just the emissive ones
+static std::vector<lightsurf_t*> emissive_light_surfaces;
 
 std::vector<std::unique_ptr<lightsurf_t>> &LightSurfaces()
 {
     return light_surfaces;
+}
+
+std::vector<lightsurf_t*> &EmissiveLightSurfaces()
+{
+    return emissive_light_surfaces;
+}
+
+static void UpdateEmissiveLightSurfacesList()
+{
+    emissive_light_surfaces.clear();
+
+    for (const auto &surf_ptr : light_surfaces) {
+        if (!surf_ptr || !surf_ptr->vpl) {
+            // didn't emit anthing
+            continue;
+        }
+        emissive_light_surfaces.push_back(surf_ptr.get());
+    }
 }
 
 static std::vector<facesup_t> faces_sup; // lit2/bspx stuff
@@ -193,13 +213,14 @@ worldspawn_keys::worldspawn_keys()
       minlight_dirt{this, "minlight_dirt", false, &worldspawn_group},
       phongallowed{this, "phong", true, &worldspawn_group},
       phongangle{this, "phong_angle", 0, &worldspawn_group},
-      bounce{this, "bounce", false, &worldspawn_group},
+      bounce{this, "bounce", 0, &worldspawn_group},
       bouncestyled{this, "bouncestyled", false, &worldspawn_group},
       bouncescale{this, "bouncescale", 1.0, 0.0, 100.0, &worldspawn_group},
       bouncecolorscale{this, "bouncecolorscale", 0.0, 0.0, 1.0, &worldspawn_group},
       bouncelightsubdivision{this, "bouncelightsubdivision", 64.0, 1.0, 8192.0, &worldspawn_group},
       surflightscale{this, "surflightscale", 1.0, &worldspawn_group},
       surflightskyscale{this, "surflightskyscale", 1.0, &worldspawn_group},
+      surflightskydist{this, "surflightskydist", 0.0, &worldspawn_group},
       surflightsubdivision{this, {"surflightsubdivision", "choplight"}, 16.0, 1.0, 8192.0, &worldspawn_group},
       surflight_minlight_scale{this, "surflight_minlight_scale", 1.0f, 0.f, 510.f, &worldspawn_group},
       sunlight{this, {"sunlight", "sun_light"}, 0.0, &worldspawn_group},
@@ -684,10 +705,12 @@ static void CacheTextures(const mbsp_t &bsp)
             face_textures[i] = {nullptr, {127}, {0.5}};
         } else {
             auto tex = img::find(name);
-            face_textures[i] = {tex, tex->averageColor,
+            auto &ext = extended_texinfo_flags[bsp.dfaces[i].texinfo];
+            auto avg = ext.surflight_color.value_or(tex->averageColor);
+            face_textures[i] = {tex, avg,
                 // lerp between gray and the texture color according to `bouncecolorscale` (0 = use gray, 1 = use
                 // texture color)
-                mix(qvec3d{127}, qvec3d(tex->averageColor), light_options.bouncecolorscale.value()) / 255.0};
+                mix(qvec3d{127}, qvec3d(avg), light_options.bouncecolorscale.value()) / 255.0};
         }
     }
 }
@@ -768,7 +791,7 @@ static void SaveLightmapSurfaces(mbsp_t *bsp)
 void ClearLightmapSurfaces(mbsp_t *bsp)
 {
     logging::funcheader();
-    logging::parallel_for(static_cast<size_t>(0), bsp->dfaces.size(), [&bsp](size_t i) { light_surfaces[i].reset(); });
+    logging::parallel_for(static_cast<size_t>(0), bsp->dfaces.size(), [](size_t i) { light_surfaces[i].reset(); });
 }
 
 static void FindModelInfo(const mbsp_t *bsp)
@@ -939,6 +962,7 @@ static void LightWorld(bspdata_t *bspdata, bool forcedscale)
             light_options.debugmode == debugmodes::bouncelights); // mxd
 
     MakeRadiositySurfaceLights(light_options, &bsp);
+    UpdateEmissiveLightSurfacesList();
 
     logging::header("Direct Lighting"); // mxd
     logging::parallel_for(static_cast<size_t>(0), bsp.dfaces.size(), [&bsp](size_t i) {
@@ -952,18 +976,27 @@ static void LightWorld(bspdata_t *bspdata, bool forcedscale)
     });
 
     if (bouncerequired && !light_options.nolighting.value()) {
-        MakeBounceLights(light_options, &bsp);
 
-        logging::header("Indirect Lighting"); // mxd
-        logging::parallel_for(static_cast<size_t>(0), bsp.dfaces.size(), [&bsp](size_t i) {
-            if (light_surfaces[i] && Face_IsLightmapped(&bsp, &bsp.dfaces[i])) {
-#if defined(HAVE_EMBREE) && defined(__SSE2__)
-                _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-#endif
+        for (size_t i = 0; i < light_options.bounce.value(); i++) {
 
-                IndirectLightFace(&bsp, *light_surfaces[i].get(), light_options);
+            if (!MakeBounceLights(light_options, &bsp, i)) {
+                logging::header("No bounces; indirect lighting halted");
+                break;
             }
-        });
+            UpdateEmissiveLightSurfacesList();
+
+            logging::header(fmt::format("Indirect Lighting (pass {0})", i).c_str()); // mxd
+
+            logging::parallel_for(static_cast<size_t>(0), bsp.dfaces.size(), [i, &bsp](size_t f) {
+                if (light_surfaces[f] && Face_IsLightmapped(&bsp, &bsp.dfaces[f])) {
+    #if defined(HAVE_EMBREE) && defined(__SSE2__)
+                    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    #endif
+
+                    IndirectLightFace(&bsp, *light_surfaces[f].get(), light_options, i);
+                }
+            });
+        }
     }
 
     if (!light_options.nolighting.value()) {
@@ -1196,6 +1229,9 @@ static void LoadExtendedTexinfoFlags(const fs::path &sourcefilename, const mbsp_
         }
         if (val.contains("light_alpha")) {
             flags.light_alpha = val.at("light_alpha").get<vec_t>();
+        }
+        if (val.contains("light_twosided")) {
+            flags.light_twosided = val.at("light_twosided").get<bool>();
         }
         if (val.contains("lightcolorscale")) {
             flags.lightcolorscale = val.at("lightcolorscale").get<vec_t>();
@@ -1483,7 +1519,6 @@ static void ResetLight()
 
 void light_reset()
 {
-    ResetBounce();
     ResetLightEntities();
     ResetLight();
     ResetLtFace();
@@ -1574,9 +1609,10 @@ int light_main(int argc, const char **argv)
 
     img::load_textures(&bsp, light_options);
 
+    LoadExtendedTexinfoFlags(source, &bsp);
+
     CacheTextures(bsp);
 
-    LoadExtendedTexinfoFlags(source, &bsp);
     LoadEntities(light_options, &bsp);
 
     light_options.postinitialize(argc, argv);

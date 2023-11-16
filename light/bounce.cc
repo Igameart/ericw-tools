@@ -39,13 +39,6 @@
 #include <common/qvec.hh>
 #include <common/parallel.hh>
 
-static std::atomic_size_t bouncelightpoints;
-
-void ResetBounce()
-{
-    bouncelightpoints = 0;
-}
-
 static bool Face_ShouldBounce(const mbsp_t *bsp, const mface_t *face)
 {
     // make bounce light, only if this face is shadow casting
@@ -86,14 +79,12 @@ static bool Face_ShouldBounce(const mbsp_t *bsp, const mface_t *face)
 }
 
 static void MakeBounceLight(const mbsp_t *bsp, const settings::worldspawn_keys &cfg, lightsurf_t &surf,
-    qvec3d texture_color, int32_t style, const std::vector<qvec3f> &points, const polylib::winding_t &winding,
-    const vec_t &area, const qvec3d &facenormal, const qvec3d &facemidpoint)
+    qvec3d texture_color, int32_t style, std::vector<qvec3f> &points,
+    const vec_t &area, const qvec3d &facenormal, const qvec3d &facemidpoint, size_t depth)
 {
     if (!Face_IsEmissive(bsp, surf.face)) {
         return;
     }
-
-    bouncelightpoints += points.size();
 
     // Calculate emit color and intensity...
 
@@ -104,20 +95,20 @@ static void MakeBounceLight(const mbsp_t *bsp, const settings::worldspawn_keys &
         return;
     }
 
+    // Normalize color...
+    if (intensity > 1.0) {
+        texture_color *= 1.0 / intensity;
+    }
+
     if (!surf.vpl) {
         auto &l = surf.vpl = std::make_unique<surfacelight_t>();
-
-        // Normalize color...
-        if (intensity > 1.0) {
-            texture_color *= 1.0 / intensity;
-        }
 
         // Sanity checks...
         Q_assert(!points.empty());
 
         // Add surfacelight...
         l->surfnormal = facenormal;
-        l->points = points;
+        l->points = std::move(points);
 
         // Init bbox...
         if (light_options.visapprox.value() == visapprox_t::RAYS) {
@@ -139,7 +130,7 @@ static void MakeBounceLight(const mbsp_t *bsp, const settings::worldspawn_keys &
     {
         auto &l = surf.vpl;
         auto &setting = l->styles.emplace_back();
-        setting.bounce = true;
+        setting.bounce_level = depth;
         setting.style = style;
         setting.totalintensity = intensity * area;
         setting.intensity = setting.totalintensity / l->points.size();
@@ -147,30 +138,30 @@ static void MakeBounceLight(const mbsp_t *bsp, const settings::worldspawn_keys &
     }
 }
 
-static void MakeBounceLightsThread(const settings::worldspawn_keys &cfg, const mbsp_t *bsp, const mface_t &face)
+static bool MakeBounceLightsThread(const settings::worldspawn_keys &cfg, const mbsp_t *bsp, const mface_t &face, size_t depth)
 {
     if (!Face_ShouldBounce(bsp, &face)) {
-        return;
+        return false;
     }
 
     auto &surf_ptr = LightSurfaces()[&face - bsp->dfaces.data()];
 
     if (!surf_ptr) {
-        return;
+        return false;
     }
 
     auto &surf = *surf_ptr.get();
 
     // no lights
     if (!surf.lightmapsByStyle.size()) {
-        return;
+        return false;
     }
 
     auto winding = polylib::winding_t::from_face(bsp, &face);
     vec_t area = winding.area();
 
     if (area < 1.f) {
-        return;
+        return false;
     }
 
     // Create winding...
@@ -183,27 +174,25 @@ static void MakeBounceLightsThread(const settings::worldspawn_keys &cfg, const m
 
     bool has_any_color = false;
 
-    for (const auto &lightmap : surf.lightmapsByStyle) {
+    for (auto &lightmap : surf.lightmapsByStyle) {
 
         if (lightmap.style && !cfg.bouncestyled.value()) {
             continue;
         }
 
-        for (auto &sample : lightmap.samples) {
-            sum[lightmap.style] += sample.color;
-        }
-    }
-
-    for (auto &sample : sum) {
-        if (!qv::emptyExact(sample.second)) {
-            sample.second /= sample_divisor;
+        if (!qv::emptyExact(lightmap.bounce_color)) {
+            sum[lightmap.style] = lightmap.bounce_color / sample_divisor;
             has_any_color = true;
         }
+
+        // clear bounced color from lightmap since we
+        // have "counted" it
+        lightmap.bounce_color = {};
     }
 
     // no bounced color, we can leave early
     if (!has_any_color) {
-        return;
+        return false;
     }
 
     // lerp between gray and the texture color according to `bouncecolorscale` (0 = use gray, 1 = use texture color)
@@ -240,15 +229,19 @@ static void MakeBounceLightsThread(const settings::worldspawn_keys &cfg, const m
     }
 
     for (auto &style : emitcolors) {
-        MakeBounceLight(bsp, cfg, surf, style.second, style.first, points, winding, area, facenormal, facemidpoint);
+        MakeBounceLight(bsp, cfg, surf, style.second, style.first, points, area, facenormal, facemidpoint, depth);
     }
+
+    return true;
 }
 
-void MakeBounceLights(const settings::worldspawn_keys &cfg, const mbsp_t *bsp)
+bool MakeBounceLights(const settings::worldspawn_keys &cfg, const mbsp_t *bsp, size_t depth)
 {
     logging::funcheader();
 
-    logging::parallel_for_each(bsp->dfaces, [&](const mface_t &face) { MakeBounceLightsThread(cfg, bsp, face); });
+    std::atomic_bool any_to_bounce = false;
 
-    // logging::print("{} bounce lights created, with {} points\n", bouncelights.size(), bouncelightpoints);
+    logging::parallel_for_each(bsp->dfaces, [&](const mface_t &face) { any_to_bounce = MakeBounceLightsThread(cfg, bsp, face, depth) || any_to_bounce; });
+
+    return any_to_bounce.load();
 }

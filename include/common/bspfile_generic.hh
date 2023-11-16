@@ -106,6 +106,10 @@ struct miptex_t
      * set at read time if the offset is -1
      */
     bool null_texture = false;
+    /**
+     * exposed for testing -notex
+     */
+    std::array<int32_t, MIPLEVELS> offsets;
 
     size_t stream_size() const;
 
@@ -396,3 +400,5 @@ struct mbsp_t
 };
 
 extern const bspversion_t bspver_generic;
+
+const std::initializer_list<const gamedef_t *> &gamedef_list();

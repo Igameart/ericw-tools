@@ -124,8 +124,6 @@ MainWindow::MainWindow(QWidget *parent)
     // create the menu first as it is used by other things (dock widgets)
     setupMenu();
 
-    resize(640, 480);
-
     // gl view
     glView = new GLView(this);
     setCentralWidget(glView);
@@ -136,6 +134,8 @@ MainWindow::MainWindow(QWidget *parent)
     createOutputLog();
 
     createStatusBar();
+
+    resize(1024, 768);
 }
 
 void MainWindow::createPropertiesSidebar()
@@ -158,6 +158,25 @@ void MainWindow::createPropertiesSidebar()
     auto *fullbright = new QRadioButton(tr("Fullbright"));
     auto *normals = new QRadioButton(tr("Normals"));
     auto *drawflat = new QRadioButton(tr("Flat shading"));
+    auto *hull0 = new QRadioButton(tr("Leafs"));
+    auto *hull1 = new QRadioButton(tr("Hull 1"));
+    auto *hull2 = new QRadioButton(tr("Hull 2"));
+    auto *hull3 = new QRadioButton(tr("Hull 3"));
+    auto *hull4 = new QRadioButton(tr("Hull 4"));
+    auto *hull5 = new QRadioButton(tr("Hull 5"));
+
+    lightmapped->setShortcut(QKeySequence("Alt+1"));
+    lightmap_only->setShortcut(QKeySequence("Alt+2"));
+    fullbright->setShortcut(QKeySequence("Alt+3"));
+    normals->setShortcut(QKeySequence("Alt+4"));
+    drawflat->setShortcut(QKeySequence("Alt+5"));
+    hull0->setShortcut(QKeySequence("Alt+6"));
+
+    lightmapped->setToolTip("Lighmapped textures (Alt+1)");
+    lightmap_only->setToolTip("Lightmap only (Alt+2)");
+    fullbright->setToolTip("Textures without lightmap (Alt+3)");
+    normals->setToolTip("Visualize normals (Alt+4)");
+    drawflat->setToolTip("Flat-shaded polygons (Alt+5)");
 
     auto *rendermode_layout = new QVBoxLayout();
     rendermode_layout->addWidget(lightmapped);
@@ -165,6 +184,12 @@ void MainWindow::createPropertiesSidebar()
     rendermode_layout->addWidget(fullbright);
     rendermode_layout->addWidget(normals);
     rendermode_layout->addWidget(drawflat);
+    rendermode_layout->addWidget(hull0);
+    rendermode_layout->addWidget(hull1);
+    rendermode_layout->addWidget(hull2);
+    rendermode_layout->addWidget(hull3);
+    rendermode_layout->addWidget(hull4);
+    rendermode_layout->addWidget(hull5);
 
     auto *rendermode_group = new QGroupBox(tr("Render mode"));
     rendermode_group->setLayout(rendermode_layout);
@@ -187,6 +212,10 @@ void MainWindow::createPropertiesSidebar()
     bspx_normals = new QCheckBox(tr("BSPX: Face Normals"));
     bspx_normals->setChecked(true);
 
+    auto *draw_opaque = new QCheckBox(tr("Draw Translucency as Opaque"));
+    auto *show_bmodels = new QCheckBox(tr("Show Bmodels"));
+    show_bmodels->setChecked(true);
+
     formLayout->addRow(tr("common"), common_options);
     formLayout->addRow(tr("qbsp"), qbsp_options);
     formLayout->addRow(vis_checkbox, vis_options);
@@ -202,6 +231,8 @@ void MainWindow::createPropertiesSidebar()
     formLayout->addRow(nearest);
     formLayout->addRow(bspx_decoupled_lm);
     formLayout->addRow(bspx_normals);
+    formLayout->addRow(draw_opaque);
+    formLayout->addRow(show_bmodels);
 
     lightstyles = new QVBoxLayout();
 
@@ -248,12 +279,22 @@ void MainWindow::createPropertiesSidebar()
         [=](bool checked) { glView->setShowTrisSeeThrough(checked); });
     connect(visculling, &QAbstractButton::toggled, this, [=](bool checked) { glView->setVisCulling(checked); });
     connect(drawflat, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawFlat(checked); });
+    connect(hull0, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{0} : std::nullopt); });
+    connect(hull1, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{1} : std::nullopt); });
+    connect(hull2, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{2} : std::nullopt); });
+    connect(hull3, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{3} : std::nullopt); });
+    connect(hull4, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{4} : std::nullopt); });
+    connect(hull5, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeafs(checked ? std::optional<int>{5} : std::nullopt); });
     connect(drawportals, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawPortals(checked); });
     connect(drawleak, &QAbstractButton::toggled, this, [=](bool checked) { glView->setDrawLeak(checked); });
     connect(keepposition, &QAbstractButton::toggled, this, [=](bool checked) { glView->setKeepOrigin(checked); });
     connect(nearest, &QAbstractButton::toggled, this,
         [=](bool checked) { glView->setMagFilter(checked ? QOpenGLTexture::Nearest : QOpenGLTexture::Linear); });
+    connect(draw_opaque, &QAbstractButton::toggled, this,
+        [=](bool checked) { glView->setDrawTranslucencyAsOpaque(checked); });
     connect(glView, &GLView::cameraMoved, this, &MainWindow::displayCameraPositionInfo);
+    connect(show_bmodels, &QAbstractButton::toggled, this,
+        [=](bool checked) { glView->setShowBmodels(checked); });
 
     // set up load timer
     m_fileReloadTimer = std::make_unique<QTimer>();
@@ -377,7 +418,7 @@ void MainWindow::setupMenu()
 
     menu->addSeparator();
 
-    auto *takeScreenshot = menu->addAction(tr("Save Screenshot..."), this, &MainWindow::takeScreenshot);
+    menu->addAction(tr("Save Screenshot..."), this, &MainWindow::takeScreenshot);
 
     menu->addSeparator();
 
@@ -495,7 +536,8 @@ std::filesystem::path MakeFSPath(const QString &string)
 }
 
 bspdata_t MainWindow::QbspVisLight_Common(const std::filesystem::path &name, std::vector<std::string> extra_common_args,
-    std::vector<std::string> extra_qbsp_args, std::vector<std::string> extra_vis_args, std::vector<std::string> extra_light_args, bool run_vis)
+    std::vector<std::string> extra_qbsp_args, std::vector<std::string> extra_vis_args,
+    std::vector<std::string> extra_light_args, bool run_vis)
 {
     auto resetActiveTabText = [&]() {
         QMetaObject::invokeMethod(this, std::bind(&MainWindow::logWidgetSetText, this, m_activeLogTab,
@@ -660,7 +702,7 @@ int MainWindow::compileMap(const QString &file, bool is_reload)
 
             LoadBSPFile(fs_path, &m_bspdata);
 
-            auto opts = ParseArgs(light_options);
+            auto opts = ParseArgs(common_options);
 
             std::vector<const char *> argPtrs;
 
@@ -679,8 +721,8 @@ int MainWindow::compileMap(const QString &file, bool is_reload)
             ConvertBSPFormat(&m_bspdata, &bspver_generic);
 
         } else {
-            m_bspdata = QbspVisLight_Common(fs_path, ParseArgs(common_options), ParseArgs(qbsp_options), ParseArgs(vis_options),
-                ParseArgs(light_options), vis_checkbox->isChecked());
+            m_bspdata = QbspVisLight_Common(fs_path, ParseArgs(common_options), ParseArgs(qbsp_options),
+                ParseArgs(vis_options), ParseArgs(light_options), vis_checkbox->isChecked());
 
             // FIXME: move to a lightpreview_settings
             settings::common_settings settings;
@@ -691,20 +733,34 @@ int MainWindow::compileMap(const QString &file, bool is_reload)
             m_bspdata.loadversion->game->init_filesystem(file.toStdString(), settings);
         }
     } catch (const settings::parse_exception &p) {
+        // FIXME: threading error: don't call Qt widgets code from background thread
         auto *textEdit = m_outputLogWidget->textEdit(m_activeLogTab);
         textEdit->append(QString::fromUtf8(p.what()) + QString::fromLatin1("\n"));
         m_activeLogTab = ETLogTab::TAB_LIGHTPREVIEW;
         return 1;
     } catch (const settings::quit_after_help_exception &p) {
+        // FIXME: threading error: don't call Qt widgets code from background thread
         auto *textEdit = m_outputLogWidget->textEdit(m_activeLogTab);
         textEdit->append(QString::fromUtf8(p.what()) + QString::fromLatin1("\n"));
         m_activeLogTab = ETLogTab::TAB_LIGHTPREVIEW;
         return 1;
     } catch (const std::exception &other) {
+        // FIXME: threading error: don't call Qt widgets code from background thread
         auto *textEdit = m_outputLogWidget->textEdit(m_activeLogTab);
         textEdit->append(QString::fromUtf8(other.what()) + QString::fromLatin1("\n"));
         m_activeLogTab = ETLogTab::TAB_LIGHTPREVIEW;
         return 1;
+    }
+
+    // try to load .lit
+    auto lit_path = fs_path;
+    lit_path.replace_extension(".lit");
+
+    try {
+        m_litdata = LoadLitFile(lit_path);
+    } catch (const std::runtime_error &error) {
+        logging::print("error loading lit: {}", error.what());
+        m_litdata = {};
     }
 
     return 0;
@@ -728,7 +784,7 @@ void MainWindow::compileThreadExited()
     auto ents = EntData_Parse(bsp);
 
     // build lightmap atlas
-    auto atlas = build_lightmap_atlas(bsp, m_bspdata.bspx.entries, false, bspx_decoupled_lm->isChecked());
+    auto atlas = build_lightmap_atlas(bsp, m_bspdata.bspx.entries, m_litdata, false, bspx_decoupled_lm->isChecked());
 
     glView->renderBSP(m_mapFile, bsp, m_bspdata.bspx.entries, ents, atlas, render_settings, bspx_normals->isChecked());
 
@@ -803,7 +859,7 @@ void MainWindow::displayCameraPositionInfo()
         return;
 
     const qvec3f point = glView->cameraPosition();
-    const mleaf_t *leaf = BSP_FindLeafAtPoint(bsp, &bsp->dmodels[0], point);
+    [[maybe_unused]] const mleaf_t *leaf = BSP_FindLeafAtPoint(bsp, &bsp->dmodels[0], point);
 
     // TODO: display leaf info
 }

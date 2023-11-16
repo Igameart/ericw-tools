@@ -51,7 +51,7 @@ std::unique_ptr<lightsurf_t> CreateLightmapSurface(const mbsp_t *bsp, const mfac
 bool Face_IsLightmapped(const mbsp_t *bsp, const mface_t *face);
 bool Face_IsEmissive(const mbsp_t *bsp, const mface_t *face);
 void DirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg);
-void IndirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg);
+void IndirectLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg, size_t bounce_depth);
 void PostProcessLightFace(const mbsp_t *bsp, lightsurf_t &lightsurf, const settings::worldspawn_keys &cfg);
 void FinishLightmapSurface(const mbsp_t *bsp, lightsurf_t *lightsurf);
 void SaveLightmapSurface(const mbsp_t *bsp, mface_t *face, facesup_t *facesup,
@@ -67,7 +67,12 @@ struct lightgrid_sample_t
     qvec3b round_to_int() const;
     float brightness() const;
 
+    /**
+     * - if !used, style and color are ignored for equality
+     * - if a color component is nan, nan is considered equal to nan for the purposes of this comparison
+     */
     bool operator==(const lightgrid_sample_t &other) const;
+    bool operator!=(const lightgrid_sample_t &other) const; //gcc9 workaround
 };
 
 struct lightgrid_samples_t

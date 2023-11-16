@@ -78,6 +78,7 @@ class lightmap_t
 public:
     int style;
     std::vector<lightsample_t> samples;
+    qvec3d bounce_color;
 };
 
 using lightmapdict_t = std::vector<lightmap_t>;
@@ -300,7 +301,7 @@ public:
     setting_scalar phongangle;
 
     /* bounce */
-    setting_bool bounce;
+    setting_int32 bounce;
     setting_bool bouncestyled;
     setting_scalar bouncescale;
     setting_scalar bouncecolorscale;
@@ -309,6 +310,7 @@ public:
     /* Q2 surface lights (mxd) */
     setting_scalar surflightscale;
     setting_scalar surflightskyscale;
+    setting_scalar surflightskydist;
     // "choplight" - arghrad3 name
     setting_scalar surflightsubdivision;
     setting_scalar surflight_minlight_scale;
@@ -445,6 +447,7 @@ const std::unordered_map<int, std::vector<uint8_t>> &UncompressedVis();
 bool IsOutputtingSupplementaryData();
 
 std::vector<std::unique_ptr<lightsurf_t>> &LightSurfaces();
+std::vector<lightsurf_t*> &EmissiveLightSurfaces();
 
 extern std::vector<surfflags_t> extended_texinfo_flags;
 

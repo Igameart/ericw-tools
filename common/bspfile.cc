@@ -346,8 +346,8 @@ private:
     }
 
 public:
-    explicit gamedef_q1_like_t(const char *base_dir = "ID1")
-        : gamedef_t(base_dir)
+    explicit gamedef_q1_like_t(const char *friendly_name = "quake", const char *base_dir = "ID1")
+        : gamedef_t(friendly_name, base_dir)
     {
         this->id = ID;
     }
@@ -894,7 +894,7 @@ public:
 struct gamedef_h2_t : public gamedef_q1_like_t<GAME_HEXEN_II>
 {
     gamedef_h2_t()
-        : gamedef_q1_like_t("DATA1")
+        : gamedef_q1_like_t("hexen2", "DATA1")
     {
     }
 
@@ -950,7 +950,7 @@ struct gamedef_h2_t : public gamedef_q1_like_t<GAME_HEXEN_II>
 struct gamedef_hl_t : public gamedef_q1_like_t<GAME_HALF_LIFE>
 {
     gamedef_hl_t()
-        : gamedef_q1_like_t("VALVE")
+        : gamedef_q1_like_t("halflife", "VALVE")
     {
         has_rgb_lightmap = true;
     }
@@ -973,7 +973,7 @@ struct gamedef_hl_t : public gamedef_q1_like_t<GAME_HALF_LIFE>
 struct gamedef_q2_t : public gamedef_t
 {
     gamedef_q2_t()
-        : gamedef_t("BASEQ2")
+        : gamedef_t("quake2", "baseq2")
     {
         this->id = GAME_QUAKE_II;
         has_rgb_lightmap = true;
@@ -1512,14 +1512,28 @@ public:
                         // pak0.pak/maps/source.map -> C:/Quake/ID1
                         gamedir = fs::canonical(paths.archive).parent_path();
                     } else {
-                        // maps/source.map -> C:/Quake/ID1/maps
+                        // maps/*/source.map -> C:/Quake/ID1/maps
                         // this is weak because the source may not exist yet
-                        gamedir = fs::weakly_canonical(source).parent_path();
+                        bool found_maps_folder = false;
+                        fs::path olddir = gamedir = source;
 
-                        if (!string_iequals(gamedir.filename().generic_string(), MAPS_FOLDER)) {
+                        // NOTE: parent_path() of C:/ is C:/ and this is considered non-empty
+                        // its relative_path() (the part after the drive letter) is empty, though
+                        while (!gamedir.relative_path().empty()) {
+                            gamedir = fs::weakly_canonical(gamedir).parent_path();
+
+                            if (string_iequals(gamedir.filename().generic_string(), MAPS_FOLDER)) {
+                                found_maps_folder = true;
+                                break;
+                            }
+                        }
+
+                        if (!found_maps_folder) {
                             logging::print(
-                                "WARNING: '{}' is not directly inside '{}'; gamedir can't be automatically determined.\n",
+                                "WARNING: '{}' is not a child of '{}'; gamedir can't be automatically determined.\n",
                                 source, MAPS_FOLDER);
+
+                            gamedir = olddir;
                         }
 
                         // C:/Quake/ID1/maps -> C:/Quake/ID1
@@ -1659,6 +1673,17 @@ static const gamedef_q1_like_t<GAME_QUAKE> gamedef_q1;
 static const gamedef_h2_t gamedef_h2;
 static const gamedef_hl_t gamedef_hl;
 static const gamedef_q2_t gamedef_q2;
+
+const std::initializer_list<const gamedef_t *> &gamedef_list()
+{
+    static constexpr std::initializer_list<const gamedef_t *> gamedefs {
+        &gamedef_q1,
+        &gamedef_h2,
+        &gamedef_hl,
+        &gamedef_q2
+    };
+    return gamedefs;
+}
 
 const bspversion_t bspver_generic{MBSPIDENT, std::nullopt, "mbsp", "generic BSP", {}};
 const bspversion_t bspver_q1{BSPVERSION, std::nullopt, "bsp29", "Quake BSP",
@@ -1830,7 +1855,7 @@ static auto as_tuple(const surfflags_t &flags)
         flags.no_bounce, flags.no_minlight, flags.no_expand, flags.no_phong, flags.light_ignore,
         flags.surflight_rescale, flags.surflight_style, flags.surflight_color, flags.surflight_minlight_scale,
         flags.surflight_targetname, flags.phong_angle, flags.phong_angle_concave, flags.phong_group, flags.minlight,
-        flags.minlight_color, flags.light_alpha, flags.maxlight, flags.lightcolorscale, flags.surflight_group,
+        flags.minlight_color, flags.light_alpha, flags.light_twosided, flags.maxlight, flags.lightcolorscale, flags.surflight_group,
         flags.world_units_per_luxel, flags.object_channel_mask);
 }
 
@@ -1977,8 +2002,8 @@ std::string contentflags_t::to_string(const gamedef_t *game) const
     return s;
 }
 
-gamedef_t::gamedef_t(const char *default_base_dir)
-    : default_base_dir(default_base_dir)
+gamedef_t::gamedef_t(const char *friendly_name, const char *default_base_dir)
+    : friendly_name(friendly_name), default_base_dir(default_base_dir)
 {
 }
 
